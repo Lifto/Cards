@@ -1,11 +1,46 @@
 pico-8 cartridge // http://www.pico-8.com
-version 36
+version 38
 __lua__
 -- klondike
 -- by lark
 
+-- v1.1
+-- dec 28 2023
+-- save record,resign,undo
+
+-- v1.0
 -- feb 16-apr 20 2020
 -- sep 2022
+
+played = 0
+won = 0
+if cartdata("klondike_lark") then
+ played = dget(0)
+ won = dget(1)
+else
+	dset(0,0)
+	dset(1,0)
+end
+
+function reset_record()
+ played = 0
+ won = 0
+ dset(0,0)
+ dset(1,0)
+end
+
+function record_win()
+ played += 1
+ won += 1
+ dset(0,played)
+ dset(1,won)
+end
+
+function record_loss()
+ played += 1
+ dset(0,played)
+ dset(1,won)
+end
 
 -- make dark green transparent
 palt(3, true)
@@ -77,7 +112,9 @@ end
 setup_menu()
 
 function resign()
- played += 1
+ -- were any moves made?
+ -- todo check the undo stack
+ record_loss()
  sfx(20) -- resign
  reshuffle()
 end
@@ -85,6 +122,10 @@ end
 -- put reset game in menu
 menuitem(2, "reshuffle",
  function() resign() end)
+
+-- put reset score in menu
+menuitem(3, "reset score",
+ function() reset_record() end)
 
 status = ""
 
@@ -1077,8 +1118,7 @@ function control_player(pl)
    if game_over() then
     -- this is same as sfx(19)
     music(0) -- victory
-    won += 1
-    played += 1
+    record_win()
     is_ending = true
    end
   end       
@@ -1174,9 +1214,6 @@ function end_test()
  select_reset() 
 end
 --end_test()
-
-played = 0
-won = 0
 
 -- left pad v with p to n chars
 function pad(v,n,p)
