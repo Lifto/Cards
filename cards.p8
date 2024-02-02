@@ -5,7 +5,7 @@ __lua__
 -- by lark
 
 -- v1.1
--- dec 28 2023
+-- dec 28 2023 - feb 2 2024
 -- save record,resign,undo
 
 -- v1.0
@@ -39,84 +39,35 @@ end
 function record_loss()
  played += 1
  dset(0,played)
- dset(1,won)
-end
-
--- make dark green transparent
-palt(3, true)
-palt(0, false)
-
--- sound map
---  1 = source select left a
---  2 = source select left b
---  3 = source select right a
---  4 = source select right b
---  5 = select source
---  6 = deselect source
---  7 = draw from deck
---  8 = replenesh deck
---  9 = target select left a
--- 10 = target select left b
--- 11 = target select right a
--- 12 = target select right b
--- 13 = target stack
--- 14 = target endzone
--- 15 = source select up a
--- 16 = source select up b
--- 17 = source select down a
--- 18 = source select down b
--- 19 = victory (also music 0)
--- 20 = resign
--- 21 = draw from deck 2
-
-function play_source_move()
- v = flr(rnd(4))+1
- sfx(v)
-end
-
-function play_source_move_vert()
- v = flr(rnd(4))+15
- sfx(v)
-end
-
-function play_target_move()
- v = flr(rnd(4))+9
- sfx(v)
-end
-
-function play_deck_draw()
- if flr(rnd(2)) == 0 then
-  sfx(7)
- else
-  sfx(21)
- end
 end
 
 -- put 1 or 3 draw in menu
 draw_size = 1
-function setup_menu()
+function setup_drawsize_menu()
  if 3 == draw_size then
 		menuitem(1, "set draw to 1", 
 		 function() 
 		  draw_size = 1 
-		  setup_menu() 
+		  setup_drawsize_menu()
 		 end)
  else
 		menuitem(1, "set draw to 3", 
 		 function() 
 		  draw_size = 3 
-		  setup_menu() 
+		  setup_drawsize_menu()
 		 end) 
  end
 end
-setup_menu()
 
 function resign()
- -- were any moves made?
- -- todo check the undo stack
- record_loss()
- sfx(20) -- resign
- reshuffle()
+ if #moves != 0 then
+  record_loss()
+  sfx(20) -- resign
+  reshuffle()
+ else
+  play_source_move()
+  reshuffle()
+ end
 end
 
 -- put reset game in menu
@@ -146,15 +97,73 @@ s_y_index = 4  -- y in stack
 -- ⬅️➡️ cycles through these
 s_2 = nil
 
-function shuffle(t)
-  -- do a fisher-yates shuffle
-  for i = #t, 1, -1 do
-    local j = flr(rnd(i)) + 1
-    t[i], t[j] = t[j], t[i]
-  end
+-- moves (and undo)
+moves = {}
+
+function add_move(m)
+ add(moves,m)
+ setup_undo_menu()
 end
 
-function flip_deck(s,t)
+function undo()
+ m = poplast(moves)
+ mv = m[1]
+ if mv == "flip_deck" then
+  while #deck != 0 do
+   c = pop(deck)
+   add(face_up,c)
+  end
+ elseif mv == "deck_draw" then
+  cnt = m[2]
+  for c=1,cnt do
+   c = poplast(face_up)
+   add(deck,c,1)
+  end
+ elseif mv == "fu_to_stk" then
+  c = poplast(m[2])
+  add(face_up,c)
+ elseif mv == "fu_to_end" then
+  e = m[2]
+  add(face_up,poplast(e))
+ elseif mv == "stk_to_end" then
+  s = m[2]
+  e = m[3]
+  add(s,poplast(e))
+ elseif mv == "stk_to_stk" then
+  s = get_stack(m[2])
+  t = get_stack(m[3])
+  cnt = m[4]
+  i = #t - cnt + 1
+  for c=1,cnt do
+   add(s,deli(t,i))
+  end
+ end
+ if #moves != 0 and
+    moves[#moves][1] ==
+     "c_flip" then
+  m = poplast(moves)
+  m[2].u = false
+ end
+ select_reset()
+end
+
+function setup_undo_menu()
+ if #moves == 0 then
+		menuitem(4, "nothing to undo",
+		 function()
+		 end)
+ else
+		menuitem(4, "undo",
+		 function()
+		  undo()
+		  setup_undo_menu()
+		 end)
+ end
+end
+
+function flip_deck()
+ s = face_up
+ t = deck
  while #s != 0 do
   c = pop(s)
   add(t,c)
@@ -179,33 +188,6 @@ function deck_empty()
         #face_up == 0
 end
 
-function pop(t)
- v = t[1]
- del(t,v)
- return v
-end
-
--- returns index of item or 0
-function find(t, item)
- index = 0
- for i in all(t) do
-  index += 1
-  if i == item then
-   return index
-  end
- end
- return 0
-end
-
--- rtn copy of table, reversed
-function reverse(t)
- r = {}
- for i=#t,1,-1 do
-  add(r,t[i])
- end
- return r
-end
-
 -- set up nested lists, 7, each
 -- with 1..n cards
 function setup_stacks()
@@ -217,471 +199,9 @@ function setup_stacks()
    c = pop(deck)
    add(stack,c)
   end
+  stack[#stack].u = true
  end
  return new_stacks
-end
-
--- draw stack of index 's'
-function draw_stack(s)
- n = "s"..tostr(s)
- x = 2+(s-1)*18
- y_base = 22
- y_step = 8
- count = 1
- y = y_base+count*y_step
- if #(stacks[s]) == 0 then
-  draw_no_card(x,y)
-  if 2 == s_state then
-   if s_2 == n then
-    draw_select_2(x,y)
-   elseif dest_selectable(n) then
-    draw_select_3(x,y)   
-   end
-  end
- else
-  -- draw stack's shadow
-  h = 8*(#stacks[s]-1)+24
-  shadow_line(x+2,y+h,x+14,y+h)
-  shadow_line(x+15,y+h-1,
-              x+15,y+h-1)
-  shadow_line(x+16,y+2,
-              x+16,y+h-2)
- end
- for c in all(stacks[s]) do
-  if count == #stacks[s] then 
-   c.u = true
-  end
-  y = y_base+count*y_step
-  if c.u then
-   draw_card(x,y,c.s,c.r,c.u,
-             false)
-  else
-   draw_under_card(x,y)
-  end  
-  if #(stacks[s]) == count and
-     s_state == 2 then
-   if s_2 == n then  
-    draw_select_2(x,y)
-   elseif dest_selectable(n) then
-    draw_select_3(x,y)   
-   end
-  end
-  count += 1
- end
-
- if s_1 == n then
-  if s_y_index == 0 then
-   offset = 1
-  else 
-   offset = s_y_index
-  end
-  y = y_base+offset*y_step
-  c = stacks[s][offset]
-  if c!=nil then
-   draw_card(x,y,c.s,c.r,c.u,false)
-  end
-  draw_select_1(x,y) 
- end	
-end
-
--- replace pixel at x,y with
--- a shadow value
-function make_shadow(x,y)
- c = pget(x,y)
- if 7 == c then -- white
-  pset(x,y,6) -- light grey
- elseif 0 == c then -- black
-  -- nop
- elseif 8 == c then -- red
-  pset(x,y,2) -- purple
- elseif 12 == c then -- lt blue
-  pset(x,y,2) -- purple
- elseif 13 == c then -- grey
-  pset(x,y,5) -- dark grey
- elseif 6 == c then -- lt grey
-  pset(x,y,5) -- dark grey
- elseif 3 == c then -- dk green
-  pset(x,y,5) -- dark grey
- elseif 14 == c then -- pink
-  pset(x,y,2) -- purple
- elseif 7 == c then -- white
-  pset(x,y,6) -- lt grey
- elseif 3 == c then -- dk green
-  pset(x,y,5) -- dark grey
- end
-end
-
--- draw a line of shadow
-function shadow_line(x,y,x2,y2)
- for a=x,x2 do
-  for b=y,y2 do
-   make_shadow(a,b)
-  end
- end
-end
-
-function _draw_sel_shadow(x,y)
- for i=0,21 do
-  make_shadow(x+1,y+1+i)
- end
- for i=0,12 do
-  make_shadow(x+2+i,y+1)
- end
- for i=0,15 do
-  make_shadow(x+1+i,y+25)
- end
- for i=0,22 do
-  make_shadow(x+17,y+1+i)
- end 
-end
-
-function draw_select_1(x,y)
- sspr(75,2,19,27,x-1,y-1)
- _draw_sel_shadow(x,y)
-end
-
-function draw_select_2(x,y)
- sspr(98,2,19,27,x-1,y-1)
- _draw_sel_shadow(x,y)
-end
-
-function draw_select_3(x,y)
- sspr(66,98,19,27,x-1,y-1)
- _draw_sel_shadow(x,y)
-end
-
--- outline of a card
-function draw_no_card(x,y)
- sspr(56,0,16,24,x,y)
-end
-
--- shadow around a card
-function draw_shadow(x,y)
- line(x+2,y+24,x+14,y+24,5)
- line(x+15,y+23,x+15,y+23,5)
- line(x+16,y+2,x+16,y+22,5)
-end
-
--- draw end collections
-function draw_endzone(e)
- n = "e"..e
- x_step = 18
- y = 4
- x = 2+(e-1)*x_step
- endzone = endzones[e]
- c = endzone[#endzone]
- if c == nil then
-  draw_no_card(x,y)
- else 
-  c.u = true
-  draw_shadow(x,y)
-  draw_card(x,y,c.s,c.r,c.u,false)
- end
- if 2 == s_state then
-  if s_2 == n then
-		 draw_select_2(x,y)
-		elseif dest_selectable(n) then
-		 draw_select_3(x,y)
-  end
- end
-end
-
--- draw the top 3 face up cards
-function draw_face_up()
- x_step = 9
- x = 74
- y = 4
- if 1 == draw_size then
-  if #face_up != 0 then
-   c = face_up[#face_up]
-   draw_shadow(x+x_step*2,y)
-   draw_card(x+x_step*2,y,c.s,c.r,c.u,false)
-   if "face_up" == s_1 then
-    draw_select_1(x+x_step*2,y)
-   end
-  else
-   draw_no_card(x+x_step*2,y)
-  end 
- else
-  sspr(88,96,34,24,x,y)
-  if #face_up > 2 then
-   c = face_up[#face_up-2]
-   draw_card(x, y, c.s,c.r,
-             c.u,true)
-  end
-  if #face_up > 1 then
-   c = face_up[#face_up-1]
-   draw_card(x+x_step, y, c.s,c.r,
-             c.u,true)
-  end
-  if #face_up != 0 then
-   c = face_up[#face_up]
-   draw_card(x+x_step*2,y,c.s,c.r,c.u,false)
-   if "face_up" == s_1 then
-    draw_select_1(x+x_step*2,y)
-   end
-  end
- end
-end
-
--- draw up to three cards off
--- the deck and into face_up
-function deck_draw()
- for x=1,draw_size do
-  if #deck != 0 then
-   c = pop(deck)
-   c.u = true
-   add(face_up,c)
-  end
- end
-end
-
--- draw the deck we draw from
-function draw_deck()
- x = 110
- y = 4
- if #deck == 0 then
-  draw_no_card(x,y)
- else
-  draw_shadow(x,y)
-  draw_card(x,y,0,0,false)
- end
- if s_1 == "deck" then
-  draw_select_1(x,y)
- end
-end
-
--- suits hearts: 0, diamonds: 1
---       clubs: 2, spades: 3
--- ranks a: 0, 2:1,... 10: 9,
---       j: 10, q: 11, k: 12
-
-function rank_to_text(r)
- if r == 0 then
-  return " a"
- elseif r == 1 then
-  return " 2"
- elseif r == 2 then
-  return " 3"
- elseif r == 3 then
-  return " 4"
- elseif r == 4 then
-  return " 5"
- elseif r == 5 then
-  return " 6"
- elseif r == 6 then
-  return " 7"
- elseif r == 7 then
-  return " 8"
- elseif r == 8 then
-  return " 9"
- elseif r == 9 then
-  return "10"
- elseif r == 10 then
-  return " j"
- elseif r == 11 then
-  return " q"
- elseif r == 12 then
-  return " k"
- end
- return " x"
-end
-
--- draw_sm_pip
--- s (suit),
--- x,y (coords)
--- f (flip) true to flip yaxis
-function draw_sm_pip(s,x,y,f)
- -- these shift to the right
- -- one to line up with full
- -- sized pip
- sspr(s*4,0,4,4,x+1,y,4,4,
-      false,f)
-end
-
--- draw_pip
--- s (suit),
--- x,y (coords)
--- f (flip) true to flip yaxis
-function draw_pip(s,x,y,f)
- if s < 2 then
-  sspr(s*5,4,5,5,x,y,5,5,
-       false,f)
- else
-  sspr((s-2)*5,9,5,5,x,y,5,5,
-       false,f)
- end
-end
-
--- draw top of card back with
--- a tiny bit of shadow
-function draw_under_card(x,y)
- sspr(96,64,16,9,x,y)
-end
-
--- draw_card
--- x,y (coords),
--- s (suit), r (rank),
--- u (false if back showing)
--- side_text true for side rank
-function draw_card(x,y,s,r,u,
-                   side_text)
- if not u then
-  -- card back
-  sspr(112,64,16,24,x,y)
-  return
- end
- -- card front
- sspr(24,0,16,24,x,y)
- draw_pip(s,x+1,y+1,false)
- if s == 0 or s == 1 then
-  c = 8
- else 
-  c = 0
- end
- if side_text then
-  if r == 9 then
-   print("10",x+1,y+7,c)  
-  else
- 		print(rank_to_text(r), 
-         x-1,y+7,c)
-  end
-  return
- else
- 	print(rank_to_text(r), 
-        x+7,y+1,c)
- end
- -- card graphic
- if r == 0 then
-  if s == 0 then -- aces
-   sspr(0,64,10,10,x+3,y+10)  
-  elseif s == 1 then
-   sspr(0,74,10,11,x+3,y+9)
-  elseif s == 2 then
-   sspr(9,64,10,10,x+3,y+9)
-  elseif s == 3 then
-   sspr(18,64,10,10,x+3,y+9)
-  end
- elseif r == 1 then
-  draw_pip(s,x+6,y+8,false)
-  draw_pip(s,x+6,y+15,true)
- elseif r == 2 then
-  draw_sm_pip(s,x+6,y+7,false)
-  draw_sm_pip(s,x+6,y+12,false)
-  draw_sm_pip(s,x+6,y+17,true)
- elseif r == 3 then
-  draw_pip(s,x+2,y+8,false)
-  draw_pip(s,x+2,y+15,true)
-  draw_pip(s,x+9,y+8,false)
-  draw_pip(s,x+9,y+15,true) 
- elseif r == 4 then
-  draw_sm_pip(s,x+3,y+8,false)
-  draw_sm_pip(s,x+3,y+16,true)
-  draw_sm_pip(s,x+6,y+12,false)
-  draw_sm_pip(s,x+9,y+8,false)
-  draw_sm_pip(s,x+9,y+16,true) 
- elseif r == 5 then
-  draw_sm_pip(s,x+3,y+8,false)
-  draw_sm_pip(s,x+3,y+13,false)
-  draw_sm_pip(s,x+3,y+18,true)
-  draw_sm_pip(s,x+9,y+8,false)
-  draw_sm_pip(s,x+9,y+13,false)
-  draw_sm_pip(s,x+9,y+18,true)
- elseif r == 6 then
-  draw_sm_pip(s,x+3,y+7,false)
-  draw_sm_pip(s,x+9,y+7,false)
-  
-  draw_sm_pip(s,x+6,y+10,false)
-  
-  draw_sm_pip(s,x+3,y+13,false)
-  draw_sm_pip(s,x+9,y+13,false)
-
-  draw_sm_pip(s,x+3,y+17,true)
-  draw_sm_pip(s,x+9,y+17,true) 
- elseif r == 7 then
-  draw_sm_pip(s,x+3,y+7,false)
-  draw_sm_pip(s,x+9,y+7,false)
-
-  draw_sm_pip(s,x+6,y+10,false)
-
-  draw_sm_pip(s,x+3,y+13,false)
-  draw_sm_pip(s,x+9,y+13,false)
-
-  draw_sm_pip(s,x+6,y+16,false)
-
-  draw_sm_pip(s,x+3,y+18,true)
-  draw_sm_pip(s,x+9,y+18,true) 
- elseif r == 8 then
-  draw_sm_pip(s,x+3,y+7,false)
-  draw_sm_pip(s,x+9,y+7,false)
-
-  draw_sm_pip(s,x+6,y+9,false)
-
-  draw_sm_pip(s,x+3,y+11,false)
-  draw_sm_pip(s,x+9,y+11,false)
-
-  draw_sm_pip(s,x+3,y+14,true)
-  draw_sm_pip(s,x+9,y+14,true)
-
-  draw_sm_pip(s,x+3,y+18,true)
-  draw_sm_pip(s,x+9,y+18,true)
- elseif r == 9 then
-  draw_sm_pip(s,x+3,y+7,false)
-  draw_sm_pip(s,x+9,y+7,false)
-
-  draw_sm_pip(s,x+6,y+9,false)
-
-  draw_sm_pip(s,x+3,y+11,false)
-  draw_sm_pip(s,x+9,y+11,false)
-
-  draw_sm_pip(s,x+3,y+14,true)
-  draw_sm_pip(s,x+9,y+14,true)
-
-  draw_sm_pip(s,x+6,y+16,true)
-
-  draw_sm_pip(s,x+3,y+18,true)
-  draw_sm_pip(s,x+9,y+18,true)
- elseif r == 10 then -- jack
-  if s == 0 then 
-   sspr(3,96,14,15,x+4,y+8)
-  elseif s == 1 then
-   sspr(20,97,11,15,x+3,y+9)
-  elseif s == 2 then
-   sspr(36,97,11,15,x+3,y+9)     
-  elseif s == 3 then
-   sspr(52,97,11,15,x+3,y+9)
-  end 
- 
- elseif r == 11 then -- queen
-  if s == 0 then 
-   sspr(36,81,14,15,x+4,y+8)
-  elseif s == 1 then
-   sspr(51,81,11,15,x+5,y+8)
-  elseif s == 2 then
-   sspr(68,81,11,15,x+3,y+9)     
-  elseif s == 3 then
-   sspr(84,81,11,15,x+3,y+9)
-  end 
- elseif r == 12 then -- king
-  if s == 0 then
-   sspr(35,65,11,15,x+3,y+9)
-  elseif s == 1 then
-   sspr(51,64,12,16,x+3,y+8)
-  elseif s == 2 then
-   sspr(67,65,11,15,x+2,y+9)     
-  elseif s == 3 then
-   sspr(83,65,12,15,x+3,y+9)
-  end
- end
-end
-
-function draw_pico8(x,y)
- sspr(93,32,35,12,x,y)
-end
-
-function draw_logo()
- sspr(0,32,90,32,2,94)
- --draw_pico8(14,92)
 end
 
 -- red
@@ -696,7 +216,7 @@ end
 function can_stack(s,t)
  if (s == nil) return false
  if (t == nil) return s.r == 12
-	return red(s) != red(t) and 
+	return red(s) != red(t) and
 	       t.r-1 == s.r
 end
 
@@ -715,124 +235,6 @@ function e_can_stack(s,e)
  end
 end
 
--- remove a card from a stack
--- and return it, else nil
-function pop_next_anim_card()
- candidates = {}
- for i=1,7 do
-  if #stacks[i] > 0 then
-   add(candidates, "stack")
-   break
-  end
- end
- if #deck > 0 then
-  add(candidates, "deck")
- end
- if #face_up > 0 then
-  add(candidates, "face_up")
- end
-  
- if #candidates == 0 then
-  return nil
- end
-
- next_source = rnd(candidates)
- 
- c = {}
- if next_source == "stack" then
-  -- get card from longest stack  
-	 max_len = 0
-	 max_i = nil
-	 stack_count = 0
-	 for i=1,7 do
-	  stack_count += #stacks[i]
-	  if #stacks[i] > max_len then
-	   max_len = #stacks[i]
-	   max_i = i
-	  end
-	 end
-  s = stacks[max_i]
-  found_card = s[#s]
-  -- start coordinates
-  c.x = 2+(max_i-1)*x_step
-  y_base = 22
-  y_step = 8
-  c.y = y_base+#s*y_step
-  deli(s,#s)
- elseif next_source == "deck" then
-  -- anim card from deck
-  found_card = deck[#deck]
-  c.x = 110
-  c.y = 4
-  deli(deck,#deck)
- elseif next_source == "face_up" then
-  found_card = face_up[#face_up]
-  c.x = 92
-  c.y = 4
-  deli(face_up,#face_up)
- end	  
-
- x_step = 18 -- endzone spacing
- -- endzone coordinates
- target_x = 2+(found_card.s)*x_step
- target_y = 4
- -- normalize speed
- dx = (target_x - c.x)
- dy = (target_y - c.y)
- h = sqrt(dx^2+dy^2)
- 
- -- later cards start faster
- card_count = 0
- for i=1,7 do
-  card_count += #stacks[i]
- end
- card_count += #deck
- card_count += #face_up
- speed = .5 + 14/card_count
-
-	return {x=c.x,y=c.y,
-	        target_x=target_x,
-	        target_y=target_y,
-	      	 speed=speed,
-         dx=dx/h,
-         dy=dy/h,
-         s=found_card.s,
-         r=found_card.r,
-         u=false}
-end
-
-function move_card(c)
- c_next_x = c.x + c.speed * c.dx
- c_next_y = c.y + c.speed * c.dy
-
- x_done = 
-  (c.x <= c.target_x and
-   c.target_x <= c_next_x) or
-  (c.x >= c.target_x and
-   c.target_x >= c_next_x)
- if x_done then
-  c.x = c.target_x
- end
-  
- y_done = 
-  (c.y <= c.target_y and
-   c.target_y <= c_next_y) or
-  (c.y >= c.target_y and
-   c.target_y >= c_next_y)
- if y_done then
-  c.y = c.target_y
- end   
- 
- if x_done and y_done then
-  return false
- else
-  c.x = c_next_x
-  c.y = c_next_y
-  c.speed += .7
-  return true
- end
-end
-
 -- source selections in order
 source_names = {"s1","s2","s3",
  "s4","s5","s6","s7","face_up",
@@ -846,7 +248,7 @@ dest_names = {"s1","s2","s3",
 -- the targets in order starting
 -- from current_target and wrap
 -- around
--- d == direction, 
+-- d == direction,
 --      0==left, 1==right
 function sources(d)
  return _t_order(source_names,
@@ -889,7 +291,7 @@ function source_selectable(t)
  elseif "face_up" == t then
   return 0 != #face_up
  else
-  -- convert, ex "s4" to num 4 
+  -- convert, ex "s4" to num 4
   i = tonum(sub(t,2))
   return 0 != #stacks[i]
  end
@@ -927,10 +329,10 @@ function dest_selectable(t)
 	   return false
 	  end
 	  i = end_index(t)
- 		return e_can_stack(c,i)
+   return e_can_stack(c,i)
 	 elseif "face_up" == s_1 then
 	  i = end_index(t)
- 		return e_can_stack(c,i)	  
+   return e_can_stack(c,i)
 	 end
  elseif is_stack(t) then
   s = get_stack_top_card(t)
@@ -1055,18 +457,88 @@ function select_reset()
  fix_invalid_selection()
 end
 
+-- calling these functions
+-- executes a move and adds
+-- an undoable move object to
+-- the 'moves' table.
+function move_flip_deck()
+ flip_deck()
+ add_move({"flip_deck"})
+end
+
+function move_deck_draw()
+ cnt = deck_draw()
+ if draw_size == 1 then
+  add_move({"deck_draw",cnt})
+ else
+  add_move({"deck_draw",cnt})
+ end
+end
+
+function move_face_up_to_stack(s)
+ c = source_card()
+ del(face_up,c)
+ t = get_stack(s)
+ add(t,c)
+ add_move({"fu_to_stk",t})
+end
+
+function move_face_up_to_end(t)
+ c = source_card()
+ del(face_up,c)
+ e = get_end(t)
+ add(e,c)
+ add_move({"fu_to_end",e})
+end
+
+function move_stack_to_end(s_1,s_2)
+ c = source_card()
+ s = get_stack(s_1)
+ del(s,c)
+ e = get_end(s_2)
+ add(e,c)
+ if #s != 0 and
+    not s[#s].u then
+  s[#s].u = true
+		add_move({"c_flip",s[#s]})
+ end
+ add_move({"stk_to_end",s,e})
+end
+
+function move_stack_to_stack(s_1,
+                             s_2)
+ s = get_stack(s_1)
+ t = get_stack(s_2)
+ cnt = 0
+ for i=s_y_index,#s do
+  c = s[i]
+  add(t,c)
+  cnt += 1
+ end
+ for i=s_y_index,#s do
+  del(s,s[s_y_index])
+ end
+ if #s != 0 and 
+    not s[#s].u then
+ 	s[#s].u = true
+		add_move({"c_flip",s[#s]}) 
+ end
+ add_move({"stk_to_stk",
+           s_1,s_2,
+           cnt})
+end
+
 function control_player(pl)
  -- state 1: no source card
  -- x: select source card
- if s_state == 1 and 
+ if s_state == 1 and
     btnp(4) then
-  if "deck" == s_1 then 
+  if "deck" == s_1 then
    if #deck == 0 then
     sfx(8) -- replenesh deck
-    flip_deck(face_up,deck)
+    move_flip_deck()
    else
-    play_deck_draw()
-    deck_draw()
+    move_deck_draw()
    end
    select_reset()
   elseif next_valid_dest() != nil then
@@ -1084,44 +556,32 @@ function control_player(pl)
   end
   if btnp(4) then
    -- execute source-to-dest
-   c = source_card()
    if is_end(s_2) then
     sfx(14) -- target endzone
-    if is_stack(s_1) then
-     s = get_stack(s_1)
-     del(s,c)
-    elseif "face_up" == s_1 then
-     del(face_up,c)
+    if "face_up" == s_1 then
+     move_face_up_to_end(s_2)
+    elseif is_stack(s_1) then
+     move_stack_to_end(s_1,s_2)
     end
-    e = get_end(s_2)
-    add(e,c)
     select_reset()
    elseif is_stack(s_2) then
     sfx(13) -- target stack
 	   t = get_stack(s_2)
     if "face_up" == s_1 then
-     del(face_up,c)
-     add(t,c)
+     move_face_up_to_stack(s_2)
     elseif is_stack(s_1) then
-     s = get_stack(s_1)
-     for i=s_y_index,#s do
-      c = s[i]
-      add(t,c)
-     end
-     for i=s_y_index,#s do
-	     del(s,s[s_y_index])
-				 end
+     move_stack_to_stack(s_1,s_2)
     end
     select_reset()
    end
-  
+
    if game_over() then
     -- this is same as sfx(19)
     music(0) -- victory
     record_win()
     is_ending = true
    end
-  end       
+  end
  end
 
  -- 1 == source card select
@@ -1160,9 +620,9 @@ function reshuffle()
  stacks = setup_stacks()
  face_up = {}
  endzones = {{},{},{},{}}
- select_reset() 
+ moves = {}
+ select_reset()
 end
-reshuffle()
 
 -- set up a game near the end
 function end_test()
@@ -1211,25 +671,7 @@ function end_test()
  }
  
  s_y_index=1
- select_reset() 
-end
---end_test()
-
--- left pad v with p to n chars
-function pad(v,n,p)
- local s = ""..v
- local t = #s
- for i=1,n-t do
-  s=p..s
- end
- return s
-end
-
--- draw played/wins in lower right
-function draw_record()
- s = tostr(played).."/"..tostr(won)
- s = pad(s,7," ")
- print(s,99,121,7)
+ select_reset()
 end
 
 function update_status()
@@ -1303,6 +745,708 @@ function _draw()
  end
 end
 
+function _init()
+ setup_drawsize_menu()
+ setup_undo_menu()
+ reshuffle()
+ --end_test()
+end
+-->8
+-- drawing
+
+-- make dark green transparent
+palt(3, true)
+palt(0, false)
+
+-- draw stack of index 's'
+function draw_stack(s)
+ n = "s"..tostr(s)
+ x = 2+(s-1)*18
+ y_base = 22
+ y_step = 8
+ count = 1
+ y = y_base+count*y_step
+ if #(stacks[s]) == 0 then
+  draw_no_card(x,y)
+  if 2 == s_state then
+   if s_2 == n then
+    draw_select_2(x,y)
+   elseif dest_selectable(n) then
+    draw_select_3(x,y)
+   end
+  end
+ else
+  -- draw stack's shadow
+  h = 8*(#stacks[s]-1)+24
+  shadow_line(x+2,y+h,x+14,y+h)
+  shadow_line(x+15,y+h-1,
+              x+15,y+h-1)
+  shadow_line(x+16,y+2,
+              x+16,y+h-2)
+ end
+ for c in all(stacks[s]) do
+  y = y_base+count*y_step
+  if c.u then
+   draw_card(x,y,c.s,c.r,c.u,
+             false)
+  else
+   draw_under_card(x,y)
+  end
+  if #(stacks[s]) == count and
+     s_state == 2 then
+   if s_2 == n then
+    draw_select_2(x,y)
+   elseif dest_selectable(n) then
+    draw_select_3(x,y)
+   end
+  end
+  count += 1
+ end
+
+ if s_1 == n then
+  if s_y_index == 0 then
+   offset = 1
+  else
+   offset = s_y_index
+  end
+  y = y_base+offset*y_step
+  c = stacks[s][offset]
+  if c!=nil then
+   draw_card(x,y,c.s,c.r,c.u,false)
+  end
+  draw_select_1(x,y)
+ end
+end
+
+-- replace pixel at x,y with
+-- a shadow value
+function make_shadow(x,y)
+ c = pget(x,y)
+ if 7 == c then -- white
+  pset(x,y,6) -- light grey
+ elseif 0 == c then -- black
+  -- nop
+ elseif 8 == c then -- red
+  pset(x,y,2) -- purple
+ elseif 12 == c then -- lt blue
+  pset(x,y,2) -- purple
+ elseif 13 == c then -- grey
+  pset(x,y,5) -- dark grey
+ elseif 6 == c then -- lt grey
+  pset(x,y,5) -- dark grey
+ elseif 3 == c then -- dk green
+  pset(x,y,5) -- dark grey
+ elseif 14 == c then -- pink
+  pset(x,y,2) -- purple
+ elseif 7 == c then -- white
+  pset(x,y,6) -- lt grey
+ elseif 3 == c then -- dk green
+  pset(x,y,5) -- dark grey
+ end
+end
+
+-- draw a line of shadow
+function shadow_line(x,y,x2,y2)
+ for a=x,x2 do
+  for b=y,y2 do
+   make_shadow(a,b)
+  end
+ end
+end
+
+function _draw_sel_shadow(x,y)
+ for i=0,21 do
+  make_shadow(x+1,y+1+i)
+ end
+ for i=0,12 do
+  make_shadow(x+2+i,y+1)
+ end
+ for i=0,15 do
+  make_shadow(x+1+i,y+25)
+ end
+ for i=0,22 do
+  make_shadow(x+17,y+1+i)
+ end
+end
+
+function draw_select_1(x,y)
+ sspr(75,2,19,27,x-1,y-1)
+ _draw_sel_shadow(x,y)
+end
+
+function draw_select_2(x,y)
+ sspr(98,2,19,27,x-1,y-1)
+ _draw_sel_shadow(x,y)
+end
+
+function draw_select_3(x,y)
+ sspr(66,98,19,27,x-1,y-1)
+ _draw_sel_shadow(x,y)
+end
+
+-- outline of a card
+function draw_no_card(x,y)
+ sspr(56,0,16,24,x,y)
+end
+
+-- shadow around a card
+function draw_shadow(x,y)
+ line(x+2,y+24,x+14,y+24,5)
+ line(x+15,y+23,x+15,y+23,5)
+ line(x+16,y+2,x+16,y+22,5)
+end
+
+-- draw end collections
+function draw_endzone(e)
+ n = "e"..e
+ x_step = 18
+ y = 4
+ x = 2+(e-1)*x_step
+ endzone = endzones[e]
+ c = endzone[#endzone]
+ if c == nil then
+  draw_no_card(x,y)
+ else
+  draw_shadow(x,y)
+  draw_card(x,y,c.s,c.r,c.u,false)
+ end
+ if 2 == s_state then
+  if s_2 == n then
+		 draw_select_2(x,y)
+		elseif dest_selectable(n) then
+		 draw_select_3(x,y)
+  end
+ end
+end
+
+-- draw the top 3 face up cards
+function draw_face_up()
+ x_step = 9
+ x = 74
+ y = 4
+ if 1 == draw_size then
+  if #face_up != 0 then
+   c = face_up[#face_up]
+   draw_shadow(x+x_step*2,y)
+   draw_card(x+x_step*2,y,c.s,c.r,c.u,false)
+   if "face_up" == s_1 then
+    draw_select_1(x+x_step*2,y)
+   end
+  else
+   draw_no_card(x+x_step*2,y)
+  end
+ else
+  sspr(88,96,34,24,x,y)
+  if #face_up > 2 then
+   c = face_up[#face_up-2]
+   draw_card(x, y, c.s,c.r,
+             c.u,true)
+  end
+  if #face_up > 1 then
+   c = face_up[#face_up-1]
+   draw_card(x+x_step, y, c.s,c.r,
+             c.u,true)
+  end
+  if #face_up != 0 then
+   c = face_up[#face_up]
+   draw_card(x+x_step*2,y,c.s,c.r,c.u,false)
+   if "face_up" == s_1 then
+    draw_select_1(x+x_step*2,y)
+   end
+  end
+ end
+end
+
+-- draw up to three cards off
+-- the deck and into face_up
+function deck_draw()
+ play_deck_draw()
+ cnt = 0
+ for x=1,draw_size do
+  if #deck != 0 then
+   c = pop(deck)
+   c.u = true
+   add(face_up,c)
+   cnt += 1
+  end
+ end
+ return cnt
+end
+
+-- draw the deck we draw from
+function draw_deck()
+ x = 110
+ y = 4
+ if #deck == 0 then
+  draw_no_card(x,y)
+ else
+  draw_shadow(x,y)
+  draw_card(x,y,0,0,false)
+ end
+ if s_1 == "deck" then
+  draw_select_1(x,y)
+ end
+end
+
+-- suits hearts: 0, diamonds: 1
+--       clubs: 2, spades: 3
+-- ranks a: 0, 2:1,... 10: 9,
+--       j: 10, q: 11, k: 12
+
+function rank_to_text(r)
+ if r == 0 then
+  return " a"
+ elseif r == 1 then
+  return " 2"
+ elseif r == 2 then
+  return " 3"
+ elseif r == 3 then
+  return " 4"
+ elseif r == 4 then
+  return " 5"
+ elseif r == 5 then
+  return " 6"
+ elseif r == 6 then
+  return " 7"
+ elseif r == 7 then
+  return " 8"
+ elseif r == 8 then
+  return " 9"
+ elseif r == 9 then
+  return "10"
+ elseif r == 10 then
+  return " j"
+ elseif r == 11 then
+  return " q"
+ elseif r == 12 then
+  return " k"
+ end
+ return " x"
+end
+
+-- draw_sm_pip
+-- s (suit),
+-- x,y (coords)
+-- f (flip) true to flip yaxis
+function draw_sm_pip(s,x,y,f)
+ -- these shift to the right
+ -- one to line up with full
+ -- sized pip
+ sspr(s*4,0,4,4,x+1,y,4,4,
+      false,f)
+end
+
+-- draw_pip
+-- s (suit),
+-- x,y (coords)
+-- f (flip) true to flip yaxis
+function draw_pip(s,x,y,f)
+ if s < 2 then
+  sspr(s*5,4,5,5,x,y,5,5,
+       false,f)
+ else
+  sspr((s-2)*5,9,5,5,x,y,5,5,
+       false,f)
+ end
+end
+
+-- draw top of card back with
+-- a tiny bit of shadow
+function draw_under_card(x,y)
+ sspr(96,64,16,9,x,y)
+end
+
+-- draw_card
+-- x,y (coords),
+-- s (suit), r (rank),
+-- u (false if back showing)
+-- side_text true for side rank
+function draw_card(x,y,s,r,u,
+                   side_text)
+ if not u then
+  -- card back
+  sspr(112,64,16,24,x,y)
+  return
+ end
+ -- card front
+ sspr(24,0,16,24,x,y)
+ draw_pip(s,x+1,y+1,false)
+ if s == 0 or s == 1 then
+  c = 8
+ else
+  c = 0
+ end
+ if side_text then
+  if r == 9 then
+   print("10",x+1,y+7,c) 
+  else
+ 		print(rank_to_text(r),
+         x-1,y+7,c)
+  end
+  return
+ else
+  print(rank_to_text(r),
+        x+7,y+1,c)
+ end
+ -- card graphic
+ if r == 0 then
+  if s == 0 then -- aces
+   sspr(0,64,10,10,x+3,y+10)
+  elseif s == 1 then
+   sspr(0,74,10,11,x+3,y+9)
+  elseif s == 2 then
+   sspr(9,64,10,10,x+3,y+9)
+  elseif s == 3 then
+   sspr(18,64,10,10,x+3,y+9)
+  end
+ elseif r == 1 then
+  draw_pip(s,x+6,y+8,false)
+  draw_pip(s,x+6,y+15,true)
+ elseif r == 2 then
+  draw_sm_pip(s,x+6,y+7,false)
+  draw_sm_pip(s,x+6,y+12,false)
+  draw_sm_pip(s,x+6,y+17,true)
+ elseif r == 3 then
+  draw_pip(s,x+2,y+8,false)
+  draw_pip(s,x+2,y+15,true)
+  draw_pip(s,x+9,y+8,false)
+  draw_pip(s,x+9,y+15,true)
+ elseif r == 4 then
+  draw_sm_pip(s,x+3,y+8,false)
+  draw_sm_pip(s,x+3,y+16,true)
+  draw_sm_pip(s,x+6,y+12,false)
+  draw_sm_pip(s,x+9,y+8,false)
+  draw_sm_pip(s,x+9,y+16,true)
+ elseif r == 5 then
+  draw_sm_pip(s,x+3,y+8,false)
+  draw_sm_pip(s,x+3,y+13,false)
+  draw_sm_pip(s,x+3,y+18,true)
+  draw_sm_pip(s,x+9,y+8,false)
+  draw_sm_pip(s,x+9,y+13,false)
+  draw_sm_pip(s,x+9,y+18,true)
+ elseif r == 6 then
+  draw_sm_pip(s,x+3,y+7,false)
+  draw_sm_pip(s,x+9,y+7,false)
+
+  draw_sm_pip(s,x+6,y+10,false)
+
+  draw_sm_pip(s,x+3,y+13,false)
+  draw_sm_pip(s,x+9,y+13,false)
+
+  draw_sm_pip(s,x+3,y+17,true)
+  draw_sm_pip(s,x+9,y+17,true)
+ elseif r == 7 then
+  draw_sm_pip(s,x+3,y+7,false)
+  draw_sm_pip(s,x+9,y+7,false)
+
+  draw_sm_pip(s,x+6,y+10,false)
+
+  draw_sm_pip(s,x+3,y+13,false)
+  draw_sm_pip(s,x+9,y+13,false)
+
+  draw_sm_pip(s,x+6,y+16,false)
+
+  draw_sm_pip(s,x+3,y+18,true)
+  draw_sm_pip(s,x+9,y+18,true)
+ elseif r == 8 then
+  draw_sm_pip(s,x+3,y+7,false)
+  draw_sm_pip(s,x+9,y+7,false)
+
+  draw_sm_pip(s,x+6,y+9,false)
+
+  draw_sm_pip(s,x+3,y+11,false)
+  draw_sm_pip(s,x+9,y+11,false)
+
+  draw_sm_pip(s,x+3,y+14,true)
+  draw_sm_pip(s,x+9,y+14,true)
+
+  draw_sm_pip(s,x+3,y+18,true)
+  draw_sm_pip(s,x+9,y+18,true)
+ elseif r == 9 then
+  draw_sm_pip(s,x+3,y+7,false)
+  draw_sm_pip(s,x+9,y+7,false)
+
+  draw_sm_pip(s,x+6,y+9,false)
+
+  draw_sm_pip(s,x+3,y+11,false)
+  draw_sm_pip(s,x+9,y+11,false)
+
+  draw_sm_pip(s,x+3,y+14,true)
+  draw_sm_pip(s,x+9,y+14,true)
+
+  draw_sm_pip(s,x+6,y+16,true)
+
+  draw_sm_pip(s,x+3,y+18,true)
+  draw_sm_pip(s,x+9,y+18,true)
+ elseif r == 10 then -- jack
+  if s == 0 then
+   sspr(3,96,14,15,x+4,y+8)
+  elseif s == 1 then
+   sspr(20,97,11,15,x+3,y+9)
+  elseif s == 2 then
+   sspr(36,97,11,15,x+3,y+9)
+  elseif s == 3 then
+   sspr(52,97,11,15,x+3,y+9)
+  end
+ elseif r == 11 then -- queen
+  if s == 0 then
+   sspr(36,81,14,15,x+4,y+8)
+  elseif s == 1 then
+   sspr(51,81,11,15,x+5,y+8)
+  elseif s == 2 then
+   sspr(68,81,11,15,x+3,y+9)
+  elseif s == 3 then
+   sspr(84,81,11,15,x+3,y+9)
+  end
+ elseif r == 12 then -- king
+  if s == 0 then
+   sspr(35,65,11,15,x+3,y+9)
+  elseif s == 1 then
+   sspr(51,64,12,16,x+3,y+8)
+  elseif s == 2 then
+   sspr(67,65,11,15,x+2,y+9)
+  elseif s == 3 then
+   sspr(83,65,12,15,x+3,y+9)
+  end
+ end
+end
+
+function draw_pico8(x,y)
+ sspr(93,32,35,12,x,y)
+end
+
+function draw_logo()
+ sspr(0,32,90,32,2,94)
+ --draw_pico8(14,92)
+end
+
+-- draw played/wins in lower right
+function draw_record()
+ s = tostr(played).."/"..tostr(won)
+ s = pad(s,7," ")
+ print(s,99,121,7)
+end
+
+-->8
+-- sound
+
+-- sound map
+--  1 = source select left a
+--  2 = source select left b
+--  3 = source select right a
+--  4 = source select right b
+--  5 = select source
+--  6 = deselect source
+--  7 = draw from deck
+--  8 = replenesh deck
+--  9 = target select left a
+-- 10 = target select left b
+-- 11 = target select right a
+-- 12 = target select right b
+-- 13 = target stack
+-- 14 = target endzone
+-- 15 = source select up a
+-- 16 = source select up b
+-- 17 = source select down a
+-- 18 = source select down b
+-- 19 = victory (also music 0)
+-- 20 = resign
+-- 21 = draw from deck 2
+
+function play_source_move()
+ v = flr(rnd(4))+1
+ sfx(v)
+end
+
+function play_source_move_vert()
+ v = flr(rnd(4))+15
+ sfx(v)
+end
+
+function play_target_move()
+ v = flr(rnd(4))+9
+ sfx(v)
+end
+
+function play_deck_draw()
+ if flr(rnd(2)) == 0 then
+  sfx(7)
+ else
+  sfx(21)
+ end
+end
+
+
+-->8
+-- utils
+
+function shuffle(t)
+  -- do a fisher-yates shuffle
+  for i = #t, 1, -1 do
+    local j = flr(rnd(i)) + 1
+    t[i], t[j] = t[j], t[i]
+  end
+end
+
+function pop(t)
+ return deli(t,1)
+end
+
+function poplast(t)
+ return deli(t,#t)
+end
+
+-- returns index of item or 0
+function find(t, item)
+ index = 0
+ for i in all(t) do
+  index += 1
+  if i == item then
+   return index
+  end
+ end
+ return 0
+end
+
+-- rtn copy of table, reversed
+function reverse(t)
+ r = {}
+ for i=#t,1,-1 do
+  add(r,t[i])
+ end
+ return r
+end
+
+-- left pad v with p to n chars
+function pad(v,n,p)
+ local s = ""..v
+ local t = #s
+ for i=1,n-t do
+  s=p..s
+ end
+ return s
+end
+
+-->8
+-- animation
+
+-- remove a card from a stack
+-- and return it, else nil
+function pop_next_anim_card()
+ candidates = {}
+ for i=1,7 do
+  if #stacks[i] > 0 then
+   add(candidates, "stack")
+   break
+  end
+ end
+ if #deck > 0 then
+  add(candidates, "deck")
+ end
+ if #face_up > 0 then
+  add(candidates, "face_up")
+ end
+
+ if #candidates == 0 then
+  return nil
+ end
+
+ next_source = rnd(candidates)
+
+ c = {}
+ if next_source == "stack" then
+  -- get card from longest stack
+	 max_len = 0
+	 max_i = nil
+	 stack_count = 0
+	 for i=1,7 do
+	  stack_count += #stacks[i]
+	  if #stacks[i] > max_len then
+	   max_len = #stacks[i]
+	   max_i = i
+	  end
+	 end
+  s = stacks[max_i]
+  found_card = s[#s]
+  -- start coordinates
+  c.x = 2+(max_i-1)*x_step
+  y_base = 22
+  y_step = 8
+  c.y = y_base+#s*y_step
+  deli(s,#s)
+ elseif next_source == "deck" then
+  -- anim card from deck
+  found_card = deck[#deck]
+  c.x = 110
+  c.y = 4
+  deli(deck,#deck)
+ elseif next_source == "face_up" then
+  found_card = face_up[#face_up]
+  c.x = 92
+  c.y = 4
+  deli(face_up,#face_up)
+ end
+
+ x_step = 18 -- endzone spacing
+ -- endzone coordinates
+ target_x = 2+(found_card.s)*x_step
+ target_y = 4
+ -- normalize speed
+ dx = (target_x - c.x)
+ dy = (target_y - c.y)
+ h = sqrt(dx^2+dy^2)
+
+ -- later cards start faster
+ card_count = 0
+ for i=1,7 do
+  card_count += #stacks[i]
+ end
+ card_count += #deck
+ card_count += #face_up
+ speed = .5 + 14/card_count
+
+	return {x=c.x,y=c.y,
+	        target_x=target_x,
+	        target_y=target_y,
+         speed=speed,
+         dx=dx/h,
+         dy=dy/h,
+         s=found_card.s,
+         r=found_card.r,
+         u=false}
+end
+
+function move_card(c)
+ c_next_x = c.x + c.speed * c.dx
+ c_next_y = c.y + c.speed * c.dy
+
+ x_done =
+  (c.x <= c.target_x and
+   c.target_x <= c_next_x) or
+  (c.x >= c.target_x and
+   c.target_x >= c_next_x)
+ if x_done then
+  c.x = c.target_x
+ end
+
+ y_done =
+  (c.y <= c.target_y and
+   c.target_y <= c_next_y) or
+  (c.y >= c.target_y and
+   c.target_y >= c_next_y)
+ if y_done then
+  c.y = c.target_y
+ end
+
+ if x_done and y_done then
+  return false
+ else
+  c.x = c_next_x
+  c.y = c_next_y
+  c.speed += .7
+  return true
+ end
+end
 __gfx__
 83833833303330333333333337777777777777733cccccccccccccc3366666666666666333333333333333333333333333333333333333333333333333333333
 8883888300030003333333337777777777777777ccddddddddddddcc633333333333333633333333333333333333333333333333333333333333333333333333
