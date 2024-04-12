@@ -1,8 +1,18 @@
 pico-8 cartridge // http://www.pico-8.com
-version 38
+version 42
 __lua__
 -- klondike
 -- by lark
+
+-- v1.2
+-- march-april 2024
+-- * save tableau
+-- * save settings
+-- * optional setting: 
+--     move from foundation
+-- * up and down arrows 
+--   navigate to and from the 
+--   deck
 
 -- v1.1
 -- dec 28 2023 - feb 2 2024
@@ -12,15 +22,26 @@ __lua__
 -- feb 16-apr 20 2020
 -- sep 2022
 
+-- cartdata map:
+-- 0 - games played
+-- 1 - games won
+-- 2 - settings flags
+--     1's bit: draw size
+--     2's bit: foundation move
+-- 3 - version
+-- 4 - select source
+-- 5 - select index
+-- 6 - true if at least one move
+-- 7 - tableau (31 bytes)
+
 played = 0
 won = 0
-if cartdata("klondike_lark") then
- played = dget(0)
- won = dget(1)
-else
-	dset(0,0)
-	dset(1,0)
-end
+draw_size = 1
+foundation_move = false
+data_version = -1
+moved = false
+tableau_save_address = 0x5e1c
+last_lower_source = "s4"
 
 function reset_record()
  played = 0
@@ -42,25 +63,49 @@ function record_loss()
 end
 
 -- put 1 or 3 draw in menu
-draw_size = 1
 function setup_drawsize_menu()
  if 3 == draw_size then
-		menuitem(1, "set draw to 1", 
+		menuitem(3, "set draw to 1",
 		 function() 
-		  draw_size = 1 
+		  draw_size = 1
+		  dset(2,dget(2) & 0b10)
 		  setup_drawsize_menu()
 		 end)
  else
-		menuitem(1, "set draw to 3", 
+		menuitem(3, "set draw to 3",
 		 function() 
-		  draw_size = 3 
+		  draw_size = 3
+		  dset(2,dget(2) | 0b01)
 		  setup_drawsize_menu()
 		 end) 
  end
 end
 
+-- allow moving from foundation
+function setup_foundation_move_menu()
+ if foundation_move then
+		menuitem(4, "disable fnd move",
+		 function()
+		  foundation_move = false
+		  source_names = source_names_without_foundations
+		  dset(2,dget(2) & 0b01)
+		  fix_invalid_selection()
+		  setup_foundation_move_menu()
+		 end)
+ else
+		menuitem(4, "enable fnd move",
+		 function()
+		  foundation_move = true
+		  source_names = source_names_with_foundations
+		  dset(2,dget(2) | 0b10)
+		  fix_invalid_selection()
+		  setup_foundation_move_menu()
+		 end)
+ end
+end
+
 function resign()
- if #moves != 0 then
+ if moved then
   record_loss()
   sfx(20) -- resign
   reshuffle()
@@ -68,6 +113,7 @@ function resign()
   play_source_move()
   reshuffle()
  end
+ save_tableau()
 end
 
 -- put reset game in menu
@@ -75,7 +121,7 @@ menuitem(2, "reshuffle",
  function() resign() end)
 
 -- put reset score in menu
-menuitem(3, "reset score",
+menuitem(5, "reset score",
  function() reset_record() end)
 
 status = ""
@@ -102,7 +148,10 @@ moves = {}
 
 function add_move(m)
  add(moves,m)
+ moved = true
+ dset(6,1)
  setup_undo_menu()
+ save_tableau()
 end
 
 function undo()
@@ -129,6 +178,10 @@ function undo()
   s = m[2]
   e = m[3]
   add(s,poplast(e))
+ elseif mv == "end_to_stk" then
+  e = m[2]
+  s = m[3]
+  add(e,poplast(s))
  elseif mv == "stk_to_stk" then
   s = get_stack(m[2])
   t = get_stack(m[3])
@@ -145,20 +198,214 @@ function undo()
   m[2].u = false
  end
  select_reset()
+ save_tableau()
 end
 
 function setup_undo_menu()
  if #moves == 0 then
-		menuitem(4, "nothing to undo",
+		menuitem(1, "nothing to undo",
 		 function()
 		 end)
  else
-		menuitem(4, "undo",
+		menuitem(1, "undo",
 		 function()
 		  undo()
 		  setup_undo_menu()
 		 end)
  end
+end
+
+-- takes a coroutine 'src'
+-- and pulls 6-bit numbers
+-- from it, writing them to
+-- cartdata starting at 'off'
+
+function six_bit_writer(off,src)
+ local flag = true
+ local buffer = 0
+ local buffer_bits = 0
+ while flag do
+  local last_num = coread(src)
+  if last_num == nil then
+   if buffer_bits != 0 then
+    -- flush buffer
+    poke(off,
+         buffer << 8-buffer_bits)
+   end
+   flag = false
+  else
+   local bit_cnt = min(6,
+	               8-buffer_bits)
+	  buffer <<= bit_cnt
+	  local num_holder = last_num
+	  local use_bits = 6-bit_cnt
+	  num_holder >>>= use_bits
+	  buffer |= num_holder
+	  buffer_bits += bit_cnt
+	  if buffer_bits == 8 then
+	   poke(off,buffer)
+	   off += 1
+	   buffer_bits = use_bits
+	   buffer = last_num
+	  end
+  end
+ end
+end
+
+function six_bit_reader()
+ local off = tableau_save_address
+ local cnt = 71
+
+ local bit_cnt = 0
+ local val = 0
+ local buffer = 0
+ local buffer_bits = 0
+ while cnt != 0 do
+  if buffer_bits == 6 then
+   yield(buffer)
+   buffer = 0
+   cnt -= 1
+   buffer_bits = 0
+  elseif buffer_bits < 6 then
+   local chunk = peek(off)
+   off += 1
+   buffer <<= 6-buffer_bits
+   local chunk2 = chunk
+   chunk2 >>= 8-(6-buffer_bits)
+   chunk2 &= 0b111111
+   buffer |= chunk2
+   yield(buffer)
+   cnt -= 1
+   buffer_bits = 8-(6-buffer_bits)
+   buffer = chunk & ((2^buffer_bits)-1)
+   buffer &= 0xff
+  end
+ end
+end
+
+-- save/load
+function save_tableau()
+ six_bit_writer(tableau_save_address,
+  cocreate(save_coroutine))
+end
+
+-- highest card is 60
+save_mark = 61
+
+function card_to_bits(c)
+ return (c.s << 4) + c.r
+end
+
+function bits_to_card(b,u)
+ return {
+  s = (b & 0b110000) >>> 4,
+  r = b & 0b1111,
+  u=u
+ }
+end
+
+function save_coroutine()
+ local cnt = 0
+ for sx=1,7 do
+  local s = stacks[sx]
+  local had_face_up = false
+  for c in all(s) do
+   if c.u and
+      not had_face_up then
+    had_face_up = true
+    cnt += 1
+    yield(save_mark)
+   end
+   cnt += 1
+	  yield(card_to_bits(c))
+  end
+  if not had_face_up then
+   cnt += 1
+   yield(save_mark)
+  end
+  cnt += 1
+  yield(save_mark)
+ end
+ for ex=1,4 do
+  local e = endzones[ex]
+  for c in all(e) do
+   cnt += 1
+   yield(card_to_bits(c))
+  end
+  cnt += 1
+  yield(save_mark)
+ end
+ for c in all(face_up) do
+  assert(card_to_bits(c)!=61)
+  cnt += 1
+  yield(card_to_bits(c))
+ end
+ cnt += 1
+ yield(save_mark)
+ for c in all(deck) do
+  assert(card_to_bits(c)!=61)
+  cnt += 1
+  yield(card_to_bits(c))
+ end
+end
+
+function read_tableau()
+ local reader = cocreate(
+                six_bit_reader) 
+ x_stacks = {{},{},{},{},{},{},{}}
+ x_endzones = {{},{},{},{}}
+ x_face_up = {}
+ x_deck = {}
+ local stack = 1
+ local endzone = 1
+ local is_face_up = true
+ local stack_face_up = false
+ local flag = true
+ while flag do
+  local marker = coread(reader)
+  if marker == nil then
+   flag = false
+  elseif stack != nil then
+   if marker == save_mark then
+    if not stack_face_up then
+     stack_face_up = true
+    else
+     if stack == 7 then
+      stack = nil
+     else
+      stack += 1
+     end
+     stack_face_up = false
+    end
+   else
+    add(x_stacks[stack],bits_to_card(marker,stack_face_up))
+   end
+  elseif endzone != nil then
+   if marker == save_mark then
+    if endzone == 4 then
+     endzone = nil
+    else
+     endzone += 1
+    end
+   else
+    add(x_endzones[endzone],bits_to_card(marker,true))
+   end
+  elseif is_face_up then
+   if marker == save_mark then
+    is_face_up = false
+   else
+    add(x_face_up,bits_to_card(marker,true))
+   end
+  else -- deck
+   assert(marker!=save_mark,"was save mark after faceup")
+   add(x_deck,bits_to_card(marker,true))
+  end
+ end
+ stacks = x_stacks
+ endzones = x_endzones
+ face_up = x_face_up
+ deck = x_deck
+ assert(#stacks==7,"was "..#stacks)
 end
 
 function flip_deck()
@@ -191,12 +438,11 @@ end
 -- set up nested lists, 7, each
 -- with 1..n cards
 function setup_stacks()
- new_stacks = {}
+ local new_stacks = {{},{},{},{},{},{},{}}
  for s=1,7 do
-  stack = {}
-  add(new_stacks,stack)
+  local stack = new_stacks[s]
   for t=1,s do
-   c = pop(deck)
+   local c = pop(deck)
    add(stack,c)
   end
   stack[#stack].u = true
@@ -236,9 +482,17 @@ function e_can_stack(s,e)
 end
 
 -- source selections in order
-source_names = {"s1","s2","s3",
+source_names_without_foundations = {"s1","s2","s3",
  "s4","s5","s6","s7","face_up",
  "deck"}
+source_names_with_foundations =
+{"s1","s2","s3","s4","s5","s6",
+ "s7","face_up","deck","e1",
+ "e2","e3","e4"}
+source_names = source_names_without_foundations
+
+lower_source_names = { "s1",
+ "s2","s3","s4","s5","s6", "s7"}
 
 -- dest selections in order
 dest_names = {"s1","s2","s3",
@@ -290,6 +544,12 @@ function source_selectable(t)
   return not deck_empty()
  elseif "face_up" == t then
   return 0 != #face_up
+ elseif sub(t,1,1) == "e" then
+  if not foundation_move then
+   return false
+  end
+  i = tonum(sub(t,2))
+  return 0 != #endzones[i]
  else
   -- convert, ex "s4" to num 4
   i = tonum(sub(t,2))
@@ -303,6 +563,9 @@ function source_card()
   return deck[#deck]
  elseif "face_up" == s_1 then
   return face_up[#face_up]
+ elseif "e" == sub(s_1,1,1) then
+  local e = endzones[tonum(sub(s_1,2))]
+  return e[#e]
  else
   return get_stack_card(s_1,
                      s_y_index)
@@ -407,10 +670,18 @@ function get_end(t)
 end
 
 function set_source(t)
+ if 0 != find(
+   lower_source_names,s_1) then
+  last_lower_source = s_1
+ end
  s_1 = t
+ dset(4,find(source_names,t))
  if is_stack(t) then
   index = stack_index(t)
   s_y_index = #stacks[index]
+  dset(5,s_y_index)
+ else
+  dset(5,0)
  end
 end
 
@@ -505,6 +776,15 @@ function move_stack_to_end(s_1,s_2)
  add_move({"stk_to_end",s,e})
 end
 
+function move_end_to_stack(s_1,s_2)
+ c = source_card()
+ e = get_end(s_1)
+ del(e,c)
+ s = get_stack(s_2)
+ add(s,c)
+ add_move({"end_to_stk",e,s})
+end
+
 function move_stack_to_stack(s_1,
                              s_2)
  s = get_stack(s_1)
@@ -569,6 +849,8 @@ function control_player(pl)
 	   t = get_stack(s_2)
     if "face_up" == s_1 then
      move_face_up_to_stack(s_2)
+    elseif is_end(s_1) then
+     move_end_to_stack(s_1,s_2)
     elseif is_stack(s_1) then
      move_stack_to_stack(s_1,s_2)
     end
@@ -596,12 +878,28 @@ function control_player(pl)
       get_stack(s_1)[s_y_index-1].u then
     play_source_move_vert()
     s_y_index -= 1
+   else
+    if find(
+        lower_source_names,
+        s_1) == 0 then
+     set_source(last_lower_source)
+    else
+     set_source("deck")
+    end
    end
   elseif btnp(3) then
    if is_stack(s_1) and
       s_y_index < #get_stack(s_1) then
     play_source_move_vert()
     s_y_index += 1
+   else
+    if find(
+        lower_source_names,
+        s_1) == 0 then
+     set_source(last_lower_source)
+    else
+     set_source("deck")
+    end
    end
   end
  end
@@ -621,6 +919,8 @@ function reshuffle()
  face_up = {}
  endzones = {{},{},{},{}}
  moves = {}
+ moved = false
+ dset(6,0)
  select_reset()
 end
 
@@ -637,7 +937,7 @@ function end_test()
   for r=0,12 do
    if 0 == find(reserve[s+1],r) then
     add(endzones[s+1],
-        {s=s,r=r,u=false})
+        {s=s,r=r,u=true})
    end
   end
  end
@@ -746,9 +1046,58 @@ function _draw()
 end
 
 function _init()
+ if not
+    cartdata("klondike_lark") then
+	 dset(0,0) -- games played
+	 dset(1,0) -- games won
+	 dset(2,0) -- settings
+	 dset(3,1) -- data version
+	 dset(4,4) -- select stack
+	 dset(5,4) -- select index
+	 dset(6,0) -- moved
+  reshuffle()
+	 save_tableau()
+ else
+  data_version = dget(3)
+  -- early version possbile
+  -- that has no 'version',
+  -- but does have score
+  if data_version != 1 then
+	  dset(2,0) -- settings
+	  dset(3,1) -- data version
+	  dset(4,4) -- select stack
+	  dset(5,4) -- select index
+	  dset(6,0) -- moved
+   reshuffle()
+	  save_tableau()
+  end
+ end
+ played = dget(0)
+ won = dget(1)
+
+ -- read settings
+ if dget(2) & 0b1 != 0 then
+  draw_size = 3
+ else
+  draw_size = 1
+ end
+
+ foundation_move =
+  dget(2) & 0b10 != 0
+ if foundation_move then
+  source_names = source_names_with_foundations
+ else
+  source_names = source_names_without_foundations
+ end
+ read_tableau()
+ s_1 = source_names[dget(4)]
+ s_y_index = dget(5)
+ moved = dget(6) == 1
+ fix_invalid_selection()
  setup_drawsize_menu()
+ setup_foundation_move_menu()
  setup_undo_menu()
- reshuffle()
+
  --end_test()
 end
 -->8
@@ -870,6 +1219,7 @@ function _draw_sel_shadow(x,y)
 end
 
 function draw_select_1(x,y)
+ if is_ending then return end
  sspr(75,2,19,27,x-1,y-1)
  _draw_sel_shadow(x,y)
 end
@@ -910,6 +1260,11 @@ function draw_endzone(e)
   draw_shadow(x,y)
   draw_card(x,y,c.s,c.r,c.u,false)
  end
+
+ if s_1 == n then
+  draw_select_1(x,y)
+ end
+
  if 2 == s_state then
   if s_2 == n then
 		 draw_select_2(x,y)
@@ -989,7 +1344,7 @@ function draw_deck()
 end
 
 -- suits hearts: 0, diamonds: 1
---       clubs: 2, spades: 3
+--       spades: 2, clubs: 3
 -- ranks a: 0, 2:1,... 10: 9,
 --       j: 10, q: 11, k: 12
 
@@ -1327,6 +1682,89 @@ function pad(v,n,p)
  return s
 end
 
+function coread(cr)
+ local e, v = coresume(cr)
+ if not e then
+  printh(costatus(cr))
+  printh(trace(cr,v))
+  assert(false,"coroutine error: "..v.."\n"..trace(cr,v))
+ else
+  return v
+ end
+end
+
+suits = {"h","d","s","c"}
+function card_to_text(c)
+ return suits[c.s+1]..rank_to_text(c.r)
+end
+
+function dtb(num)
+  local bin=""
+  for i=7,0,-1do
+    bin..=num\2^i %2
+  end
+  return bin
+end
+
+function verify_tableau()
+ printh("_______verify______")
+ local cnt = 0
+ cs = {}
+ for x in all(stacks) do
+  for y in all(x) do
+   cnt += 1
+   local st = card_to_text(y)
+   if cs[st] != nil then
+    printh("stack error: "..st.." cnt:"..cnt)
+    reshuffle()
+    save_tableau()
+    return
+   end
+   cs[st] = st
+  end
+ end
+ for x in all(endzones) do
+  for y in all(x) do
+   cnt += 1
+   local st = card_to_text(y)
+   if cs[st] != nil then
+    printh("endzone error:"..st.." cnt:"..cnt)
+    reshuffle()
+    save_tableau()
+    return
+   end
+   cs[st] = st
+  end
+ end
+ for y in all(face_up) do
+  cnt += 1
+  local st = card_to_text(y)
+  if cs[st] != nil then
+   printh("faceup error:"..st.." cnt:"..cnt)
+   reshuffle()
+   save_tableau()
+   return
+  end
+  cs[st] = st
+ end
+ for y in all(deck) do
+  cnt += 1
+  local st = card_to_text(y)
+  if cs[st] != nil then
+   printh("deck error:"..st.." cnt:"..cnt)
+   printh("bits:"..dtb(card_to_bits(y)))
+   reshuffle()
+   save_tableau()
+   return
+  end
+  cs[st] = st
+ end
+ if cnt != 52 then
+  printh("count error:"..cnt)
+  reshuffle()
+  save_tableau()
+ end
+end
 -->8
 -- animation
 
