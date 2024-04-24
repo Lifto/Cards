@@ -32,7 +32,7 @@ __lua__
 -- 4 - select source
 -- 5 - select index
 -- 6 - true if at least one move
--- 7 - tableau (31 bytes)
+-- 7 - tableau (53 bytes)
 
 played = 0
 won = 0
