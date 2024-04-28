@@ -1015,6 +1015,7 @@ function _update()
    anim_cards = {}
    is_ending = false
    reshuffle()
+   save_tableau()
   end
  else
   control_player(pl)
